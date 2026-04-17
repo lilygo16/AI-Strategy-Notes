@@ -1,0 +1,281 @@
+
+# AI News Summary Agent PRD
+
+## 1. 文档信息
+
+- 产品名称：AI News Summary Agent（微信群周报版）
+- 版本：v1.0
+- 更新时间：2026-04-16
+- 适用范围：`it-strategy` 仓库内的微信群信息归档、解析、分析、周报生成与导出
+
+## 2. 背景与目标
+
+### 2.1 背景
+
+团队 AI 情报主要来自微信群讨论（文本、链接、截图、群文件），信息密度高但碎片化严重。人工整理成本高，且难以稳定复盘与追溯。
+
+### 2.2 目标
+
+建设一个可持续运行的周报 Agent，实现：
+
+1. 每周固定时间提醒上传原始素材；
+2. 自动完成解析、主题匹配、信源评级、分类汇总；
+3. 产出可直接分发的 Markdown + PDF 周报；
+4. 全流程可追溯（聊天行号、来源链接、质量检查）。
+
+### 2.3 非目标（当前阶段）
+
+1. 不接入微信官方 API 自动抓取消息；
+2. 不做实时流式监控，采用“周批处理”模式；
+3. 不做全自动链接反查（保留人工/半自动回填机制）。
+
+## 3. 用户与使用场景
+
+### 3.1 目标用户
+
+1. IT 战略负责人（阅读周报、决策）；
+2. 分析同学（上传素材、处理异常、补充链接）；
+3. 项目管理员（维护任务计划、目录规范与规则）。
+
+### 3.2 核心场景
+
+1. 周五 09:45 收到上传提醒；
+2. 用户将 `chat.txt`、截图、文件投递到固定目录；
+3. 周五 10:00 自动跑批，生成周报与 PDF；
+4. 用户查看 `parsed/<week>/weekly-strategic-report.pdf` 并分发。
+
+## 4. 端到端工作流
+
+## 4.1 时间触发
+
+1. 09:45：`ITStrategy-FridayUploadReminder`（提醒任务）
+2. 10:00：`ITStrategy-FridayWeeklyRun`（主流程任务）
+
+## 4.2 上传入口
+
+固定目录：`incoming/friday-drop/<week>/`
+
+推荐结构：
+
+- `text/chat.txt`（必填）
+- `images/`（可选）
+- `docs/`（可选）
+- `links/resolved-from-chat.json`（可选）
+
+执行入口：
+
+- 自动：Windows 任务计划触发；
+- 手动：`node tools/friday-weekly-run.mjs --week 2026-Wx`
+
+## 4.3 处理流程（程序流水线）
+
+1. `tools/friday-weekly-run.mjs`
+   - 校验上传目录；
+   - 同步素材到 `raw/<week>/`；
+   - 调用 `tools/run-weekly.mjs`。
+2. `tools/run-weekly.mjs` 串联执行：
+   - `tools/parse-raw.mjs`
+   - `tools/resolve-chat-links.mjs`
+   - `tools/annotate-links-sources.mjs`
+   - `tools/map-themes-triage.mjs`
+   - `tools/quality-gate.mjs`
+   - `tools/weekly-strategic-report.mjs`
+   - `tools/export-weekly-pdf.mjs`
+
+## 4.4 输出结果
+
+目录：`parsed/<week>/`
+
+核心产物：
+
+1. `inventory.json`（原始资产清单）
+2. `link-source-report.json/.md`（链接信源评级与锚点）
+3. `classified-items.json/.md`（主题映射与三类分桶）
+4. `quality-report.json/.md`（质量门禁）
+5. `weekly-strategic-report.md`（战略周报正文）
+6. `weekly-strategic-report.pdf`（防乱码、优化排版 PDF）
+
+## 4.5 工作流程图（Mermaid）
+
+```mermaid
+flowchart TD
+  A[周五 09:45 提醒任务<br/>ITStrategy-FridayUploadReminder] --> B[用户上传素材<br/>incoming/friday-drop/week]
+  B --> C[周五 10:00 主任务<br/>ITStrategy-FridayWeeklyRun]
+  C --> D[friday-weekly-run.mjs<br/>校验并同步到 raw/week]
+  D --> E[run-weekly.mjs 流水线]
+
+  E --> E1[parse-raw.mjs<br/>资产清单与URL提取]
+  E --> E2[resolve-chat-links.mjs<br/>链接标题队列/映射校验]
+  E --> E3[annotate-links-sources.mjs<br/>信源评级与聊天锚点]
+  E --> E4[map-themes-triage.mjs<br/>主题匹配与三类分桶]
+  E --> E5[quality-gate.mjs<br/>质量门禁 PASS/WARN/FAIL]
+  E --> E6[weekly-strategic-report.mjs<br/>总结型周报生成]
+  E --> E7[export-weekly-pdf.mjs<br/>UTF-8无乱码+排版优化]
+
+  E7 --> F[输出 parsed/week<br/>MD + JSON + PDF]
+```
+
+## 5. Skills 使用设计
+
+本 Agent 的技能调用位于逻辑流程层（脚本层面固化），用于保证每一步职责清晰、可替换、可扩展。
+
+### 5.1 `wechat-archive-ingest`
+
+- 对应脚本：`tools/parse-raw.mjs`
+- 职责：
+  - 扫描 `raw/<week>/` 资产；
+  - 解析图片文件名时间；
+  - 抽取文本 URL；
+  - 生成 `inventory.json`。
+
+### 5.2 `link-resolver-and-source-rating`
+
+- 对应脚本：
+  - `tools/resolve-chat-links.mjs`
+  - `tools/annotate-links-sources.mjs`
+- 职责：
+  - 提取 `[链接]` 标题队列；
+  - 对齐 `resolved-from-chat.json`；
+  - 对 URL 进行信源分级（T0-T3）；
+  - 回锚到聊天行号证据。
+
+### 5.3 `theme-mapper-and-triage`
+
+- 对应脚本：`tools/map-themes-triage.mjs`
+- 职责：
+  - 按 `IT战略主题目录.md` 关键词匹配；
+  - 三轴分类：技术更新 / 厂商更新 / 组织转型更新；
+  - 输出结构化分类结果。
+
+### 5.4 `quality-gate`
+
+- 对应脚本：`tools/quality-gate.mjs`
+- 职责：
+  - 校验字段完整性、证据可追溯性、分类一致性；
+  - 输出 PASS/WARN/FAIL 报告；
+  - 作为发布前门禁。
+
+### 5.5 `weekly-report-writer`
+
+- 对应脚本：
+  - `tools/weekly-strategic-report.mjs`
+  - `tools/export-weekly-pdf.mjs`
+- 职责：
+  - 生成 **「总结版」** 周报 Markdown（结构与 `parsed/2026-W1/weekly-strategic-report.md` 一致）：**整合概括**技术 / 厂商 / 组织三类议题，**禁止**逐行机械罗列；
+  - 小节字段固定为：**Key message**、**提出人**、**群内触发语句（含行号）**、**IT 战略启示**；第 0 章为报告说明（可含外链缺口清单），第 4 章为管理层结论，第 5 章为主要引用链接；
+  - 融合 `chat.txt`、（可选）`resolved-from-chat.json` 主 URL 与 `title-queue.json`；未回填外链须在 **§0 报告说明** 中标注缺口；
+  - 输出 `weekly-strategic-report.json`（`schema: it-strategy/weekly-strategic-report-narrative/v1`）及与主 Markdown **内容一致**的 `weekly-summary.md|.json`；
+  - 导出 UTF-8 无乱码且排版优化的 PDF。
+
+## 6. 功能需求
+
+### 6.1 上传与同步
+
+1. 系统需支持固定上传目录；
+2. 支持自动建周目录脚手架；
+3. 当 `chat.txt` 缺失时停止流程并提示。
+
+### 6.2 解析与映射
+
+1. 抽取文本与链接证据；
+2. 支持链接回填映射；
+3. 支持主题关键词匹配与规则兜底。
+
+### 6.3 周报生成
+
+1. 输出按 **技术更新 / 厂商更新 / 组织转型更新** 三章组织的 **「总结版」** 叙事（见 5.5 与 `.cursor/skills/weekly-report-writer/SKILL.md`），每章下为若干 **整合主题小节**（`### x.y 标题`），非聊天逐行表；
+2. 每个主题小节须包含：
+   - **Key message**（整合判断）
+   - **提出人（主要）**
+   - **群内触发语句**（少量摘录 + **行号锚点**）
+   - **IT 战略启示**（可执行编号列表）  
+   不在小节内单独设「链接阅读后综合」；外链 URL 与缺口统一见 **§0 / §5**。
+3. 全文须含 **第 0 章报告说明**、**第 4 章本期结论**、**第 5 章主要引用链接**；
+4. 需输出 `weekly-strategic-report.md`、结构化 `weekly-strategic-report.json`、与主文件一致的 `weekly-summary.md|.json`，以及 **PDF** 且中文无乱码。
+
+### 6.4 定时任务
+
+1. 提醒任务（09:45）需弹窗并打开上传目录；
+2. 主任务（10:00）需自动跑批并写日志；
+3. 任务可通过脚本参数调整时间。
+
+## 7. 数据与目录规范
+
+### 7.1 输入
+
+1. `incoming/friday-drop/<week>/text/chat.txt`
+2. `incoming/friday-drop/<week>/images/*`
+3. `incoming/friday-drop/<week>/docs/*`
+4. `incoming/friday-drop/<week>/links/resolved-from-chat.json`
+
+### 7.2 中间层
+
+1. `raw/<week>/...`（标准化原始层）
+2. `parsed/<week>/...`（分析产出层）
+
+### 7.3 输出
+
+1. Markdown 报告
+2. JSON 结构化数据
+3. PDF 分发版
+4. 调度日志：`logs/scheduler/*.log`
+
+## 8. 质量门禁与验收标准
+
+### 8.1 门禁指标
+
+1. `quality-report` 为 PASS 或可接受 WARN；
+2. 报告中关键条目具备来源与证据；
+3. PDF 可正常打开且中文可读。
+
+### 8.2 验收清单
+
+1. 周五提醒任务触发成功；
+2. 用户上传后主任务自动运行成功；
+3. `parsed/<week>/weekly-strategic-report.pdf` 生成；
+4. 周报内容为“总结式洞察”而非逐行罗列；
+5. 报告包含三类更新。
+
+## 9. 异常处理策略
+
+1. `chat.txt` 缺失：终止并提示上传；
+2. 链接未回填：标记缺口并继续生成（不阻断全流程）；
+3. PDF 导出失败：保留 `.md`，记录错误日志并告警；
+4. 任务执行失败：通过任务历史 + `logs/scheduler` 排查。
+
+## 10. 运维与操作手册（简版）
+
+### 10.1 首次配置
+
+1. 注册提醒任务：`tools/register-reminder-task.ps1`
+2. 注册主任务：`tools/register-windows-task.ps1`
+
+### 10.2 手动触发
+
+1. 提醒任务：`schtasks /Run /TN "ITStrategy-FridayUploadReminder"`
+2. 主任务：`schtasks /Run /TN "ITStrategy-FridayWeeklyRun"`
+
+### 10.3 手动重跑某周
+
+`node tools/friday-weekly-run.mjs --week 2026-Wx`
+
+## 11. 版本规划
+
+### v1.0（当前）
+
+1. 周批处理闭环；
+2. 规则+关键词主题匹配；
+3. 定时提醒与自动跑批；
+4. Markdown/PDF 双输出。
+
+### v1.1（建议）
+
+1. 增加企业微信/邮件提醒通道；
+2. 自动链接检索与可信度评分增强；
+3. 主题匹配置信度可解释性增强。
+
+### v1.2（建议）
+
+1. 多群并行处理；
+2. 组织级知识库沉淀与检索；
+3. 运营看板（命中率、覆盖率、时效性）。
